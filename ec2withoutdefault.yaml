@@ -2,6 +2,10 @@ Parameters:
   InstanceType:
     Type: String
     Description: "EC2 instance type"
+    AllowedValues:
+       - t2.micro
+       - t2.nano
+       - t2.small
 
 Resources:
   EC2Instance:
