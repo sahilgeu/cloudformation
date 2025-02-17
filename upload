@@ -1,0 +1,210 @@
+
+/*
+Copyright © Amazon.com and Affiliates: This deliverable is considered Developed Content as defined in the AWS Service Terms and the SOW between the parties dated [February 2025].
+*/
+
+provider "aws" {
+  region = "us-west-2"  # Replace with your region
+}
+
+resource "aws_security_group" "s3_vpc_endpoint_sg" {
+  name        = "s3-vpc-endpoint-sg"
+  description = "Security group for S3 VPC endpoint"
+  vpc_id      = "vpc-0ec3d917d74e34945"
+
+  ingress {
+    description = "Allow HTTPS inbound traffic"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.58.28.0/24"]
+  }
+
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1" # -1 means all protocols
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_vpc_endpoint" "example" {
+  vpc_id            = "vpc-0ec3d917d74e34945"  # Replace with your VPC ID
+  service_name      = "com.amazonaws.s3"  # Replace with your service name (e.g., S3, DynamoDB, etc.)
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = ["subnet-0560906cdae385757","subnet-0eba45dc41dabe4dd","subnet-0bf1f072d08615b5b"]  # Replace with your subnet IDs
+  security_group_ids = [aws_security_group.s3_vpc_endpoint_sg.id] # Replace with your security group ID
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = "*"
+        Effect   = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_vpc_endpoint" "example" {
+  vpc_id            = "vpc-0ec3d917d74e34945"  # Replace with your VPC ID
+  service_name      = "com.amazonaws.s3"  # Replace with your service name (e.g., S3, DynamoDB, etc.)
+  vpc_endpoint_type = "Gateway"
+  route_table_ids = [
+    rtb-023e6b6d8bd709b37,
+    rtb-0a5c4094ec29d59da,
+    rtb-0808a5ac4dc829fa4
+  ]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = "*"
+        Effect   = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_s3_bucket" "frontend_code" {
+  bucket = "spe-cmf-frontend-code"
+  acl  =  "private"
+  
+
+  versioning {
+    enabled = true
+  }
+
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        sse_algorithm = "AES256"
+      }
+    }
+  }
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Create the custom S3 access policy
+resource "aws_iam_policy" "cmf_s3_policy" {
+  name        = "CMFS3Policy"
+  description = "Custom policy for S3 access"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:ListBucket",
+          "s3:PutObjectAcl",
+          "s3:GetObjectVersion"
+        ],
+        Resource = [
+          "arn:aws:s3:::spe-cmf-frontend-code",
+          "arn:aws:s3:::spe-cmf-frontend-code/*"
+        ]
+      }
+    ]
+  })
+}
+
+# Create the IAM Role
+resource "aws_iam_role" "cmf_frontend_ssm" {
+  name = "CMF-frontend-SSM"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = "sts:AssumeRole",
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_role_for_ssm" {
+  role       = aws_iam_role.cmf_frontend_ssm.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2RoleforSSM"
+}
+
+
+# Attach the AmazonSSMManagedInstanceCore managed policy to the IAM Role
+resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
+  role       = aws_iam_role.cmf_frontend_ssm.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+
+# Attach the custom S3 access policy to the IAM Role
+resource "aws_iam_role_policy_attachment" "custom_s3_policy" {
+  role       = aws_iam_role.cmf_frontend_ssm.name
+  policy_arn = aws_iam_policy.cmf_s3_policy.arn
+}
+
+# Create an instance profile to attach to the EC2 instance
+resource "aws_iam_instance_profile" "cmf_frontend_ssm_profile" {
+  name = "CMF-frontend-SSM-Instance-Profile"
+  role = aws_iam_role.cmf_frontend_ssm.name
+}
+
+
+# Create a security group
+resource "aws_security_group" "cmf_frontend_sg" {
+  name        = "CMF-Frontend-SG"
+  description = "Security group for CMF Frontend server"
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.58.28.0/24"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "CMF-Frontend-SG"
+  }
+}
+
+# Create the EC2 instance
+resource "aws_instance" "cmf_frontend_instance" {
+  ami             = "ami-0efad5758858a0465"  # Windows 2019 AMI ID
+  instance_type   = "t2.xlarge"
+  key_name        = "your-key-pair"  # Replace with your key pair name
+  subnet_id       = "subnet-0f0eb48a84c4f01e4"  # Replace with your subnet ID
+  vpc_security_group_ids = [aws_security_group.cmf_frontend_sg.id]
+  iam_instance_profile = var.iam_role  # IAM Role passed as variable
+  associate_public_ip_address = true  # Set to true if you need a public IP
+
+  # EBS volume
+  root_block_device {
+    volume_size = 30
+    volume_type = "gp2"
+    device_name = "/dev/sda1"
+  }
+
+  # Tags
+  tags = {
+    Name = "CMF-Frontend-server"
+  }
+}
